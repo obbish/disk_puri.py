@@ -268,14 +268,14 @@ def set_repeat_count():
 def set_max_retries():
     try:
         retries = input("Enter maximum retries (0 for infinite): ").strip()
-        global max_retries_setting
-        max_retries_setting = int(retries)
-        if max_retries_setting < 0:
+        retries_value = int(retries)
+        if retries_value < 0:
             print("Invalid input. Setting max retries to 0 (infinite).")
-            max_retries_setting = 0
+            retries_value = 0
+        return retries_value
     except ValueError:
         print("Invalid input. Setting max retries to 0 (infinite).")
-        max_retries_setting = 0
+        return 0
 
 
 def run_schema():
