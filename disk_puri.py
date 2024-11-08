@@ -126,12 +126,12 @@ def execute_command(command):
                 print(output.strip(), end="\r")
 
         if process.returncode == 0:
-            return True
+            return True, None
         elif "No space left on device" in process.stderr.read():
-            return True  # Drive full is success case
-        return False
+            return True, None
+        return False, "Command failed"
     except Exception as e:
-        return False
+        return False, str(e)
 
 
 # Check of_device
@@ -235,13 +235,16 @@ def print_schema():
     print(
         f"Repeat count: {schema_repeat_count if schema_repeat_count > 0 else 'infinite'}"
     )
+    print(
+        f"Max retries: {max_retries_setting if max_retries_setting > 0 else 'infinite'}"
+    )
     print()
     if not schema_sources:
         print("  (No sources added yet)")
     else:
         for i, s in enumerate(schema_sources, start=1):
             print(f"\033[1m{i}.\033[0m {s['command']}")
-            print()  # Blank line between passes
+            print()
 
 
 # Menu item: set the run count
@@ -262,9 +265,21 @@ def set_repeat_count():
         schema_repeat_count = 1
 
 
+def set_max_retries():
+    try:
+        retries = input("Enter maximum retries (0 for infinite): ").strip()
+        global max_retries_setting
+        max_retries_setting = int(retries)
+        if max_retries_setting < 0:
+            print("Invalid input. Setting max retries to 0 (infinite).")
+            max_retries_setting = 0
+    except ValueError:
+        print("Invalid input. Setting max retries to 0 (infinite).")
+        max_retries_setting = 0
+
+
 def run_schema():
     run_count = 0
-
     while schema_repeat_count == 0 or run_count < schema_repeat_count:
         run_count += 1
         print(f"\n\033[1m --- Starting Schema Run {run_count} ---\033[0m")
@@ -272,11 +287,19 @@ def run_schema():
         for i, source_info in enumerate(schema_sources, start=1):
             print(f"\n\033[1m{i}.\033[0m {source_info['command']}\n")
 
-            if execute_command(source_info["command"]):
-                print("Pass completed successfully.")
-            else:
-                print("Error during execution.")
-                return
+            retry_count = 0
+            while max_retries_setting == 0 or retry_count < max_retries_setting:
+                success, error = execute_command(source_info["command"])
+                if success:
+                    print("\nPass completed successfully.")
+                    break
+                retry_count += 1
+                if max_retries_setting > 0:
+                    print(
+                        f"\nError: {error}. Retrying... (attempt {retry_count} of {max_retries_setting})"
+                    )
+                else:
+                    print(f"\nError: {error}. Retrying... (attempt {retry_count})")
 
         if schema_repeat_count > 0:
             print(f"--- Completed run {run_count} of {schema_repeat_count} ---")
@@ -306,6 +329,7 @@ def main_menu():
         print("(c)opy     - Duplicate existing source")
         print("(g)enerate - Generate a custom data file")
         print("(r)epeat   - Set whether to repeat the schema")
+        print("(m)ax      - Set maximum retries")
         print("Type 'done' to execute your schema.")
 
         choice = input("Choose an option: ").strip().lower()
@@ -320,6 +344,8 @@ def main_menu():
             set_repeat_count()
         elif choice == "g":
             create_data_file()
+        elif choice == "m":
+            set_max_retries()
         elif choice == "done":
             run_schema()
             break
@@ -331,5 +357,6 @@ def main_menu():
 
 if __name__ == "__main__":
     schema_repeat_count = 1
+    max_retries_setting = 0  # Initialize with infinite retries
     print("\033[1mMulti-Pass Disk Preparation Script\033[0m")
     main_menu()
