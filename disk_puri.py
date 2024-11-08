@@ -2,321 +2,225 @@ import os
 import sys
 import subprocess
 import signal
-import stat
-import time
 
-# Global variables
+# Global list to track temporary files for cleanup
 temp_files = []
-schema_sources = []
-DEFAULT_DD_FLAGS = "bs=4M iflag=fullblock oflag=direct conv=fdatasync status=progress"
 
-# Metadata dictionary defining sources
-source_types_metadata = {
-    "random": {
-        "description": "random data",
-        "if_device": "/dev/urandom",
-        "content": None,
-        "continuous_write": False,
-    },
-    "zeros": {
-        "description": "zeros",
-        "if_device": "/dev/zero",
-        "content": None,
-        "continuous_write": False,
-    },
-    "path": {
-        "description": "content from system path",
-        "requires_input_path": True,
-        "content": None,
-        "continuous_write": None,  # Will be set by user choice
-    },
-}
-
-
-# Check if the given path is a block device
-def is_block_device(path):
-    return os.path.exists(path) and stat.S_ISBLK(os.stat(path).st_mode)
-
-
-# Construct the dd command, with or without while loop
-def build_dd_command(if_device, of_device, flags, continuous_write):
-    if continuous_write:
-        return f"while :; do cat {if_device}; done | dd of={of_device} {flags}"
-    return f"dd if={if_device} of={of_device} {flags}"
-
-
-def create_data_file():
-    print("\n\033[1mCreate Custom Data File:\033[0m")
-
-    # Get content
-    user_input = input("Enter file content (default: All binary ones): ").strip()
-    content = (
-        b"\xFF" if not user_input or user_input.upper() == "FF" else user_input.encode()
-    )
-
-    # Get file size
-    size_mb = input("Enter file size in MB (default: 128MB): ").strip()
-    try:
-        size_mb = int(size_mb) if size_mb else 128
-    except ValueError:
-        print("Invalid size input. Using default 128MB.")
-        size_mb = 128
-
-    # Get filename (with default)
-    default_name = f"gen_{int(time.time())}.tmp"
-    filename = (
-        input(f"Enter filename (default: {default_name}): ").strip() or default_name
-    )
-
-    # Get cleanup preference
-    cleanup = (
-        input("Remove file after script completion? [Y/n]: ").strip().lower() != "n"
-    )
-
-    # Create the file
-    repeat_count = (size_mb * 1024 * 1024) // len(content)
-    with open(filename, "wb") as f:
-        f.write(content * repeat_count)
-
-    if cleanup:
-        temp_files.append(filename)
-
-    print(f"\nCreated file: {filename}")
-    print(f"Size: {size_mb}MB")
-    print(f"Cleanup on exit: {'Yes' if cleanup else 'No'}")
-
-    # Offer to add to schema with automatic path selection
-    if input("\nAdd this file to schema? [Y/n]: ").strip().lower() != "n":
-        device = get_device()
-        if device:
-            write_mode = (
-                input("Write source: (o)nce or (c)ontinuously? ").strip().lower()
-            )
-            continuous_write = write_mode.startswith("c")
-
-            flags = (
-                input(
-                    f"Enter dd flags or press Enter for default [{DEFAULT_DD_FLAGS}]: "
-                ).strip()
-                or DEFAULT_DD_FLAGS
-            )
-
-            command = build_dd_command(filename, device, flags, continuous_write)
-
-            schema_sources.append(
-                {"device": device, "type": "path", "flags": flags, "command": command}
-            )
-            print("Source added successfully.")
-
-
-def execute_command(command):
-    try:
-        subprocess.run(command, shell=True, check=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        if "No space left on device" in str(e.stderr):
-            return True  # Drive full is success case
-        return False
-    except Exception:
-        return False
-
-
-# Check of_device
-def get_device():
-    device = input("Enter target drive (e.g., /dev/sdb): ").strip()
-    if not is_block_device(device):
-        print("Invalid device path. Ensure it is a valid block device in /dev/.")
-        return None
-    return device
-
-
-def add_source_to_schema():
-    device = get_device()
-    if not device:
-        return
-
-    # Prompt for source type
-    print("\n\033[1mChoose source type:\033[0m")
-    for key, meta in source_types_metadata.items():
-        print(f"({key[0]}){key[1:]: <6} - {meta['description']}")
-
-    source_type_key = input("Choose source type: ").strip().lower()
-
-    # Retrieve metadata for the selected source type
-    source_type = next(
-        (key for key in source_types_metadata if source_type_key == key[0]), None
-    )
-    if not source_type:
-        print("Invalid source type.")
-        return
-    metadata = source_types_metadata[source_type]
-
-    # Configure if_device based on source type
-    if_device = metadata.get("if_device")
-
-    # Handle path input source types
-    if metadata.get("requires_input_path"):
-        if_device = input("Enter the full path to the source: ").strip()
-        if not os.path.exists(if_device):
-            print("Invalid path.")
-            return
-
-        write_mode = input("Write source: (o)nce or (c)ontinuously? ").strip().lower()
-        metadata["continuous_write"] = write_mode.startswith("c")
-
-    # Get dd flags
-    flags = (
-        input(
-            f"Enter dd flags or press Enter for default [{DEFAULT_DD_FLAGS}]: "
-        ).strip()
-        or DEFAULT_DD_FLAGS
-    )
-
-    # Build the command using the simplified build_dd_command
-    command = build_dd_command(
-        if_device, device, flags, metadata.get("continuous_write", False)
-    )
-
-    # Add the source to schema
-    schema_sources.append(
-        {"device": device, "type": source_type, "flags": flags, "command": command}
-    )
-    print("Source added successfully.")
-
-
-# Menu item: delete a pass from the schema
-def delete_source():
-    if not schema_sources:
-        print("No sources to delete.")
-        return
-    try:
-        source_number = int(input("Enter source number to delete: ").strip()) - 1
-        if 0 <= source_number < len(schema_sources):
-            del schema_sources[source_number]
-            print("Source deleted.")
-        else:
-            print("Invalid source number.")
-    except ValueError:
-        print("Please enter a valid number.")
-
-
-# Menu item: duplicate an existing pass
-def copy_source():
-    if not schema_sources:
-        print("No sources to copy.")
-        return
-    try:
-        source_number = int(input("Enter source number to copy: ").strip()) - 1
-        if 0 <= source_number < len(schema_sources):
-            schema_sources.append(schema_sources[source_number].copy())
-            print("Source copied.")
-        else:
-            print("Invalid source number.")
-    except ValueError:
-        print("Please enter a valid number.")
-
-
-# Print the current schema with commands
-def print_schema():
-    print(f"\n\033[1mCurrent Schema:\033[0m")
-    print(
-        f"Repeat count: {schema_repeat_count if schema_repeat_count > 0 else 'infinite'}"
-    )
-    print()
-    if not schema_sources:
-        print("  (No sources added yet)")
-    else:
-        for i, s in enumerate(schema_sources, start=1):
-            print(f"\033[1m{i}.\033[0m {s['command']}")
-            print()  # Blank line between passes
-
-
-# Menu item: set the run count
-def set_repeat_count():
-    try:
-        repeat_count = int(
-            input(
-                "Enter the number of times to repeat the schema (0 for infinitely): "
-            ).strip()
-        )
-        if repeat_count < 0:
-            print("Invalid input. Setting repeat count to 1 by default.")
-            repeat_count = 1
-        global schema_repeat_count
-        schema_repeat_count = repeat_count
-    except ValueError:
-        print("Invalid input. Setting repeat count to 1 by default.")
-        schema_repeat_count = 1
-
-
-def run_schema():
-    run_count = 0
-
-    while schema_repeat_count == 0 or run_count < schema_repeat_count:
-        run_count += 1
-        print(f"\n\033[1m --- Starting Schema Run {run_count} ---\033[0m")
-
-        for i, source_info in enumerate(schema_sources, start=1):
-            print(f"\n\033[1m{i}.\033[0m {source_info['command']}\n")
-
-            if execute_command(source_info["command"]):
-                print("Pass completed successfully.")
-            else:
-                print("Error during execution.")
-                return
-
-        if schema_repeat_count > 0:
-            print(f"--- Completed run {run_count} of {schema_repeat_count} ---")
-
-    print("Disk preparation completed.")
-
-
-# Remove temporary files and exit gracefully
 def cleanup(signum, frame):
+    """Remove temporary files and exit gracefully."""
     for temp_file in temp_files:
         if os.path.isfile(temp_file):
             os.remove(temp_file)
     print("\nProcess interrupted. Exiting.")
     sys.exit(0)
 
-
-# Register cleanup handler
+# Register the cleanup function with SIGINT (Ctrl+C)
 signal.signal(signal.SIGINT, cleanup)
 
+def stream_source(pass_type, device, block_size, count=None):
+    """Handle live data sources like random and zero."""
+    if pass_type == "random":
+        command = f"dd if=/dev/urandom of={device} bs={block_size} status=progress"
+    elif pass_type == "zeros":
+        command = f"dd if=/dev/zero of={device} bs={block_size} status=progress"
+    
+    if count:
+        command += f" count={count}"
+    
+    try:
+        subprocess.run(command, shell=True, check=True)
+    except subprocess.CalledProcessError:
+        print(f"Reached the end of {device}. Disk is full.")
 
-# Main menu for schema setup and execution
-def main_menu():
-    while True:
-        print("\n\033[1mMain Menu:\033[0m")
-        print("(a)dd      - Add source to schema")
-        print("(d)elete   - Delete source from schema")
-        print("(c)opy     - Duplicate existing source")
-        print("(g)enerate - Generate a custom data file")
-        print("(r)epeat   - Set whether to repeat the schema")
-        print("Type 'done' to execute your schema.")
+def path_source(pass_type, device, block_size, count=None, content=None):
+    """Handle file-based data sources like ones, string, and file."""
+    temp_file = None
+    
+    if pass_type == "ones":
+        temp_file = "ones_source.tmp"
+        if not os.path.isfile(temp_file):
+            with open(temp_file, "wb") as f:
+                f.write(b"\xFF" * (1024 * 1024 * 256))  # 256MB of 0xFF bytes
+        temp_files.append(temp_file)
+    
+    elif pass_type == "string":
+        temp_file = "string_source.tmp"
+        if not os.path.isfile(temp_file):
+            with open(temp_file, "wb") as f:
+                for _ in range(256):  # Fill 256MB with repeated string
+                    f.write(content.encode() * (1024 * 1024 // len(content)))
+        temp_files.append(temp_file)
+    
+    elif pass_type == "file":
+        temp_file = content
+        if not os.path.isfile(temp_file):
+            print(f"Error: File not found at {temp_file}. Skipping this pass.")
+            return
+    
+    # Construct the command
+    if count:
+        command = f"dd if={temp_file} of={device} bs={block_size} count={count} status=progress"
+    else:
+        command = f"while :; do cat {temp_file}; done | dd of={device} bs={block_size} status=progress"
+    
+    try:
+        subprocess.run(command, shell=True, check=True)
+    except subprocess.CalledProcessError:
+        print(f"Reached the end of {device}. Disk is full.")
 
-        choice = input("Choose an option: ").strip().lower()
+    # Clean up only generated temp files
+    if pass_type in ["ones", "string"]:
+        os.remove(temp_file)
+    
+    # Construct the command
+    if count:
+        command = f"dd if={temp_file} of={device} bs={block_size} count={count} status=progress"
+    else:
+        command = f"while :; do cat {temp_file}; done | dd of={device} bs={block_size} status=progress"
+    
+    subprocess.run(command, shell=True, check=True)
 
-        if choice == "a":
-            add_source_to_schema()
-        elif choice == "d":
-            delete_source()
-        elif choice == "c":
-            copy_source()
-        elif choice == "r":
-            set_repeat_count()
-        elif choice == "g":
-            create_data_file()
-        elif choice == "done":
-            run_schema()
-            break
+    # Clean up only generated temp files
+    if pass_type in ["ones", "string"]:
+        os.remove(temp_file)
+
+import subprocess
+
+def perform_pass(pass_info, device):
+    """Perform a single pass based on type and block size until the specified count or full disk."""
+    pass_type = pass_info["type"]
+    block_size = pass_info["block_size"]
+    count = pass_info.get("count")
+    
+    # Prepare command based on pass type
+    if pass_type == "random":
+        command = f"dd if=/dev/urandom of={device} bs={block_size} status=progress"
+    elif pass_type == "zeros":
+        command = f"dd if=/dev/zero of={device} bs={block_size} status=progress"
+    elif pass_type == "file":
+        file_path = pass_info["content"]
+        command = f"while :; do cat {file_path}; done | dd of={device} bs={block_size} status=progress"
+    elif pass_type == "ones":
+        temp_file = "ones_source.tmp"
+        if not os.path.isfile(temp_file):
+            with open(temp_file, "wb") as f:
+                f.write(b"\xFF" * (1024 * 1024 * 256))  # Create a 256MB file of 0xFF bytes
+        command = f"while :; do cat {temp_file}; done | dd of={device} bs={block_size} status=progress"
+    elif pass_type == "string":
+        temp_file = "string_source.tmp"
+        text = pass_info["content"].encode()
+        if not os.path.isfile(temp_file):
+            with open(temp_file, "wb") as f:
+                for _ in range(256):  # Fill 256MB with the repeated string
+                    f.write(text * (1024 * 1024 // len(text)))
+        command = f"while :; do cat {temp_file}; done | dd of={device} bs={block_size} status=progress"
+
+    # Append count if specified
+    if count:
+        command += f" count={count}"
+
+    try:
+        subprocess.run(command, shell=True, check=True)
+    except subprocess.CalledProcessError as e:
+        if "end of device" in str(e):
+            print("Disk is full; moving to the next pass.")
         else:
-            print("Invalid choice. Please choose again.")
+            print(f"Unexpected error: {e}")
+            raise  # Re-raise unexpected errors
+    finally:
+        # Clean up temporary files after execution
+        if pass_type in ["ones", "string"]:
+            os.remove(temp_file)
 
-        print_schema()
+def configure_passes():
+    """Allow users to create their own pass schema with real-time schema display."""
+    passes = []
+    print("Create your custom pass schema.\n")
+    
+    while True:
+        # Enhanced pass type prompt with descriptions
+        print("Available pass types:")
+        print("  (r)andom - Writes random data to the disk")
+        print("  (z)eros  - Writes zeros to the disk")
+        print("  (o)nes   - Writes binary ones (0xFF) to the disk")
+        print("  (s)tring - Repeats a specified text string across the disk")
+        print("  (f)ile   - Repeats the contents of a file across the disk")
+        pass_type = input("Choose a pass type to add (r, z, o, s, f), or 'done' to finish: ").strip().lower()
+        
+        # Match user input to pass types
+        if pass_type == "done":
+            break
+        elif pass_type == "r":
+            pass_type = "random"
+        elif pass_type == "z":
+            pass_type = "zeros"
+        elif pass_type == "o":
+            pass_type = "ones"
+        elif pass_type == "s":
+            pass_type = "string"
+        elif pass_type == "f":
+            pass_type = "file"
+        else:
+            print("Invalid choice. Please enter one of the letters (r, z, o, s, f) or 'done' to finish.")
+            continue
+        
+        # Prompt for content if necessary
+        if pass_type == "string":
+            content = input("Enter the string to fill the disk with: ").strip()
+        elif pass_type == "file":
+            content = input("Enter the path to the source file: ").strip()
+            if not os.path.isfile(content):
+                print("Invalid file path. Please enter a valid file.")
+                continue
+        else:
+            content = None  # No content required for random, zeros, and ones
 
+        # Prompt for block size, defaulting to 4M
+        block_size = input("Enter block size (default 4M): ").strip() or "4M"
+
+        # Prompt for count, optional
+        count = input("Enter count (leave blank to fill the disk): ").strip() or None
+        
+        # Add the pass with type, content, block size, and count
+        passes.append({"type": pass_type, "content": content, "block_size": block_size, "count": count})
+        
+        # Print the updated schema after each addition
+        print("\nCurrent Pass Schema:")
+        for i, p in enumerate(passes, start=1):
+            content_display = ""
+            if p["type"] == "string":
+                content_display = f" (String: {p['content'][:24]}...)"  # Show first 24 characters
+            elif p["type"] == "file":
+                content_display = f" (File: {p['content']})"
+            count_display = f", Count: {p['count']}" if p["count"] else ""
+            print(f"{i}. Type: {p['type'].capitalize()}, Block Size: {p['block_size']}{count_display}{content_display}")
+    
+    return passes
+
+def main():
+    print("Multi-Pass Disk Preparation Script")
+
+    if os.geteuid() != 0:
+        print("This script requires elevated privileges. Please run with sudo.")
+        sys.exit(1)
+
+    device = input("\nEnter the destination device (e.g., /dev/diskX): ")
+
+    # Configure passes
+    passes = configure_passes()
+
+    # Confirm before proceeding
+    proceed = input("\nProceed with the above schema? (y/n): ").strip().lower()
+    if proceed != 'y':
+        print("Exiting without changes.")
+        sys.exit(1)
+
+    # Run each pass
+    for i, pass_info in enumerate(passes, start=1):
+        print(f"Running Pass {i}: Type: {pass_info['type'].capitalize()}, Block Size: {pass_info['block_size']}, Count: {pass_info['count'] or 'until full'}")
+        perform_pass(pass_info, device)
+
+    print("Disk preparation completed.")
 
 if __name__ == "__main__":
-    schema_repeat_count = 1
-    print("\033[1mMulti-Pass Disk Preparation Script\033[0m")
-    main_menu()
+    main()
