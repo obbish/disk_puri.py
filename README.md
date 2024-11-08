@@ -1,1 +1,2 @@
-Written for **GNU/Linux** and works on **macOS**. Adjust the dd option flags as needed.
+Works on **GNU/Linux** and **macOS**. 
+Defualt dd option flags may need tweaking for your OS.
