@@ -111,10 +111,23 @@ def create_data_file():
 
 def execute_command(command):
     try:
-        process = subprocess.run(command, shell=True, text=True, stderr=subprocess.PIPE)
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            universal_newlines=True,
+        )
+        while True:
+            output = process.stderr.readline()
+            if output == "" and process.poll() is not None:
+                break
+            if output:
+                print(output.strip(), end="\r")
+
         if process.returncode == 0:
             return True
-        elif "No space left on device" in process.stderr:
+        elif "No space left on device" in process.stderr.read():
             return True  # Drive full is success case
         return False
     except Exception as e:
