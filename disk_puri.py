@@ -111,15 +111,13 @@ def create_data_file():
 
 def execute_command(command):
     try:
-        result = subprocess.run(command, shell=True, check=True, text=True, stderr=subprocess.PIPE)
-        return True
-    except subprocess.CalledProcessError as e:
-        if "No space left on device" in e.stderr:
+        process = subprocess.run(command, shell=True, text=True, stderr=subprocess.PIPE)
+        if process.returncode == 0:
+            return True
+        elif "No space left on device" in process.stderr:
             return True  # Drive full is success case
-        print(f"Command error: {e.stderr}")
         return False
     except Exception as e:
-        print(f"Unexpected error: {e}")
         return False
 
 
