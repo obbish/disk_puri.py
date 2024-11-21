@@ -118,22 +118,26 @@ def execute_command(command):
             stdout=subprocess.PIPE,
             universal_newlines=True,
         )
+        stderr_output = ""
         while True:
             output = process.stderr.readline()
             if output == "" and process.poll() is not None:
                 break
             if output:
                 print(output.strip(), end="\r")
+                stderr_output += output
 
+        print()
         if process.returncode == 0:
             return True, None
-        elif "No space left on device" in process.stderr.read():
+        elif "No space left on device" in stderr_output:
+            print("Drive full - pass completed successfully!")
             return True, None
         return False, "Command failed"
     except Exception as e:
         return False, str(e)
-
-
+        
+        
 # Check of_device
 def get_device():
     device = input("Enter target drive (e.g., /dev/sdb): ").strip()
